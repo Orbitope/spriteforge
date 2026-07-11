@@ -34,4 +34,10 @@ spriteforge eval --checkpoint models/spriteforge_32.pt --input test.png --output
 ```
 
 ## License
-Licensing deferred for v1. See `LICENSE` for placeholder details. All training data must adhere to strict CC0 provenance (see `ASSETS_PROVENANCE.md`).
+
+**Dual Licensed:**
+
+- **Open Source (AGPL v3):** Free for non-commercial use, research, and for commercial use if you open-source your modifications.
+- **Commercial License:** Required for proprietary/closed-source commercial use, SaaS, and redistribution. Contact matthew.wesley.burke@gmail.com.
+
+See `LICENSE` for full terms and `ASSETS_PROVENANCE.md` for training data provenance (CC0 sprites only).
