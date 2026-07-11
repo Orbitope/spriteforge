@@ -1,0 +1,41 @@
+# Data and datasets (privacy, copyright)
+data_private/
+data/
+datasets/
+
+# Checkpoints and trained models (copyright, large files)
+checkpoints*/
+*.pt
+*.pth
+
+# Training outputs and logs
+*.log
+training_log.csv
+
+# Cache
+.cache/
+.palette_cache*/
+*.tmp
+
+# IDE and environment
+.vscode/
+.idea/
+*.swp
+*.swo
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.env.local
+
+# Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
