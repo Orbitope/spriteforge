@@ -22,6 +22,7 @@ def convert_image_to_sprite(
     colors: int = 16,
     palette_preset: str = "pico8",
     palette_file: str | None = None,
+    palette: np.ndarray | None = None,
     dither: bool = False,
     dither_strength: float = 0.05,
     despeckle: bool = True,
@@ -37,6 +38,10 @@ def convert_image_to_sprite(
         palette_preset: Bundled palette name (see palette.list_builtin_palettes()),
             used when palette_mode is 'preset'.
         palette_file: Path to a palette file, used when palette_mode is 'fixed'.
+        palette: Explicit (K, 3) float32 RGB palette in [0, 1]. When provided this
+            takes precedence over palette_mode/preset/file — the snap uses these
+            colors directly. This is the entry point for a user-supplied or
+            sub-selected palette (see spriteforge.core.palette_library).
         dither: Whether to apply Bayer ordered dithering during palette snapping.
         dither_strength: Intensity of dithering noise in OKLab space.
         despeckle: Whether to remove isolated transparent/opaque noise speckles.
@@ -53,9 +58,13 @@ def convert_image_to_sprite(
         alpha = np.ones(resized.shape[:2] + (1,), dtype=np.float32)
         resized = np.concatenate([resized, alpha], axis=-1)
 
-    # 2. Extract or load a color palette
+    # 2. Select the palette. An explicit palette array wins over every mode.
     mode = palette_mode.lower()
-    if "median" in mode:
+    if palette is not None:
+        palette = np.asarray(palette, dtype=np.float32)
+        if palette.ndim != 2 or palette.shape[1] != 3 or palette.shape[0] == 0:
+            raise ValueError(f"Explicit palette must be a non-empty (K, 3) array; got {palette.shape}")
+    elif "median" in mode:
         palette = extract_palette_median_cut(resized, k=colors)
     elif "preset" in mode:
         palette = load_builtin_palette(palette_preset)

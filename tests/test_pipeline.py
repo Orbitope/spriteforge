@@ -59,3 +59,22 @@ def test_convert_image_to_sprite_fixed_without_file_raises():
     img = np.random.uniform(0, 1, (64, 64, 4)).astype(np.float32)
     with pytest.raises(ValueError):
         convert_image_to_sprite(img, target_size=32, palette_mode="fixed")
+
+
+def test_convert_image_to_sprite_explicit_palette_bypasses_mode():
+    """An explicit palette= array wins over palette_mode; output uses only those colors."""
+    img = np.random.uniform(0, 1, (64, 64, 4)).astype(np.float32)
+    palette = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+    out = convert_image_to_sprite(
+        img, target_size=32, palette_mode="per-image-kmeans", palette=palette, despeckle=False
+    )
+    assert out.shape == (32, 32, 4)
+    opaque = out[out[..., 3] >= 0.5][:, :3]
+    for color in np.unique(np.round(opaque, 5), axis=0):
+        assert np.min(np.sum((palette - color) ** 2, axis=1)) < 1e-6
+
+
+def test_convert_image_to_sprite_empty_palette_raises():
+    img = np.random.uniform(0, 1, (64, 64, 4)).astype(np.float32)
+    with pytest.raises(ValueError):
+        convert_image_to_sprite(img, target_size=32, palette=np.zeros((0, 3), dtype=np.float32))
