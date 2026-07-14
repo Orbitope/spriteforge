@@ -215,9 +215,17 @@ class PaletteManagerDialog(QDialog):
     def __init__(self, parent=None, initial_colors: list[str] | None = None):
         super().__init__(parent)
         self.setWindowTitle("Palette Manager")
-        self.setMinimumSize(440, 560)
+        self.setMinimumSize(440, 580)
         self.library_changed = False  # tells the caller to refresh its combo
         layout = QVBoxLayout(self)
+
+        intro = QLabel(
+            "Build a palette below (type/pick colors, or load/import one), "
+            "then name it and save it to your library for reuse."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #aaa; font-size: 11px;")
+        layout.addWidget(intro)
 
         # ── color input row ──────────────────────────────────────────────────
         input_row = QHBoxLayout()
@@ -267,19 +275,25 @@ class PaletteManagerDialog(QDialog):
 
         # ── save-to-library row ──────────────────────────────────────────────
         save_row = QHBoxLayout()
+        save_row.addWidget(QLabel("Save as:"))
         self.edit_preset_name = QLineEdit()
-        self.edit_preset_name.setPlaceholderText("Name to save in your library")
+        self.edit_preset_name.setPlaceholderText("e.g. my-forest-palette")
         save_row.addWidget(self.edit_preset_name, 1)
-        btn_save = QPushButton("💾 Save all")
-        btn_save.clicked.connect(lambda: self._save_to_library(enabled_only=False))
-        save_row.addWidget(btn_save)
-        btn_save_sel = QPushButton("💾 Save checked")
-        btn_save_sel.clicked.connect(lambda: self._save_to_library(enabled_only=True))
-        save_row.addWidget(btn_save_sel)
-        btn_delete = QPushButton("🗑 Delete")
-        btn_delete.clicked.connect(self._delete_from_library)
-        save_row.addWidget(btn_delete)
         layout.addLayout(save_row)
+
+        save_btn_row = QHBoxLayout()
+        btn_save = QPushButton("💾 Save all colors")
+        btn_save.setToolTip("Save every color above under the name to the left (overwrites if it already exists).")
+        btn_save.clicked.connect(lambda: self._save_to_library(enabled_only=False))
+        save_btn_row.addWidget(btn_save)
+        btn_save_sel = QPushButton("💾 Save checked only")
+        btn_save_sel.setToolTip("Save just the checked (sub-selected) colors as a new palette.")
+        btn_save_sel.clicked.connect(lambda: self._save_to_library(enabled_only=True))
+        save_btn_row.addWidget(btn_save_sel)
+        btn_delete = QPushButton("🗑 Delete from library…")
+        btn_delete.clicked.connect(self._delete_from_library)
+        save_btn_row.addWidget(btn_delete)
+        layout.addLayout(save_btn_row)
 
         # ── standard OK / Cancel ─────────────────────────────────────────────
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -348,6 +362,7 @@ class PaletteManagerDialog(QDialog):
             return
         self._clear()
         self._push_palette_float32(named.colors)
+        self.edit_preset_name.setText(named.name)  # editing this one -> Save overwrites it
 
     def _import_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(
@@ -363,6 +378,8 @@ class PaletteManagerDialog(QDialog):
             return
         self._clear()
         self._push_palette_float32(colors)
+        # Suggest the file's stem as the save name; not yet in the library until Saved.
+        self.edit_preset_name.setText(Path(file_path).stem)
 
     def _remove_selected(self) -> None:
         for item in self.list_widget.selectedItems():
@@ -462,6 +479,12 @@ class StageAStudioTab(QWidget):
         self.combo_palette_mode.currentTextChanged.connect(self.on_palette_mode_changed)
         form_layout.addRow("Palette Mode:", self.combo_palette_mode)
 
+        # A dedicated action, separate from picking a mode above: define new colors,
+        # import a file, sub-select, and save/delete named palettes in your library.
+        self.btn_manage_palettes = QPushButton("🎨 Define / manage palettes…")
+        self.btn_manage_palettes.clicked.connect(self.open_palette_manager)
+        form_layout.addRow(self.btn_manage_palettes)
+
         self.spin_colors = QSpinBox()
         self.spin_colors.setRange(2, 64)
         self.spin_colors.setValue(16)
@@ -547,30 +570,33 @@ class StageAStudioTab(QWidget):
         items = ["per-image-kmeans", "per-image-median"]
         for p in palette_library.list_palettes():
             items.append(f"palette:{p.name}")
-        items.append("Define palette...")
+        # Keep the transient "just defined, not yet saved" entry alive across a
+        # refresh (e.g. triggered by saving a *different* palette in the manager).
+        if self.custom_palette is not None:
+            items.append("Custom (unsaved)")
         combo.addItems(items)
         idx = combo.findText(prev)
         combo.setCurrentIndex(idx if idx >= 0 else 0)
         combo.blockSignals(False)
 
+    def open_palette_manager(self) -> None:
+        """Define, import, or edit a palette — separate from picking a mode above."""
+        dlg = PaletteManagerDialog(self)
+        accepted = dlg.exec() == QDialog.Accepted
+        if dlg.library_changed:
+            self._refresh_palette_combo()
+        if not accepted:
+            return
+        pal = dlg.get_enabled_palette_float32()
+        if pal is None or len(pal) == 0:
+            return
+        self.custom_palette = pal
+        if self.combo_palette_mode.findText("Custom (unsaved)") < 0:
+            self.combo_palette_mode.addItem("Custom (unsaved)")
+        self.combo_palette_mode.setCurrentText("Custom (unsaved)")  # triggers convert_sprite via signal
+
     def on_palette_mode_changed(self, text: str) -> None:
-        if text == "Define palette...":
-            dlg = PaletteManagerDialog(self)
-            accepted = dlg.exec() == QDialog.Accepted
-            if dlg.library_changed:
-                self._refresh_palette_combo()
-            if accepted:
-                pal = dlg.get_enabled_palette_float32()
-                if pal is not None and len(pal) > 0:
-                    self.custom_palette = pal
-                    self.convert_sprite()
-                    return
-            # Cancelled or empty — revert
-            self.combo_palette_mode.blockSignals(True)
-            self.combo_palette_mode.setCurrentText("per-image-kmeans")
-            self.combo_palette_mode.blockSignals(False)
-        else:
-            self.convert_sprite()
+        self.convert_sprite()
 
     def convert_sprite(self):
         if self.current_img is None:
@@ -584,9 +610,9 @@ class StageAStudioTab(QWidget):
         despeckle_val = self.chk_despeckle.isChecked()
         despeckle_min = self.spin_despeckle_area.value()
 
-        # Resolve the palette. Named library palettes and "Define palette..." both
-        # produce an explicit array passed via `palette=`; per-image modes let the
-        # pipeline extract. This is the single, unified conversion call.
+        # Resolve the palette. Named library palettes and the just-defined "Custom
+        # (unsaved)" entry both produce an explicit array passed via `palette=`;
+        # per-image modes let the pipeline extract. One unified conversion call.
         palette_arr = None
         mode_val = "kmeans"
         if combo_val == "per-image-median":
@@ -597,7 +623,7 @@ class StageAStudioTab(QWidget):
             except ValueError as e:
                 QMessageBox.critical(self, "Palette Error", str(e))
                 return
-        elif combo_val == "Define palette...":
+        elif combo_val == "Custom (unsaved)":
             if self.custom_palette is None:
                 return
             palette_arr = self.custom_palette
@@ -675,12 +701,18 @@ class StageBStudioTab(QWidget):
         self.btn_restore.clicked.connect(self.run_restoration)
         form_layout.addRow(self.btn_restore)
 
-        # ── Palette snap (VQ-GAN only — E1 is already discrete) ──────────────
+        # ── Palette: snaps VQ-GAN output, conditions E1 ───────────────────────
         self.combo_palette_mode = QComboBox()
         self._refresh_palette_combo()
         self.combo_palette_mode.setCurrentText("Source image (k-means)")
         self.combo_palette_mode.currentTextChanged.connect(self.on_palette_mode_changed)
         form_layout.addRow("Palette:", self.combo_palette_mode)
+
+        # A dedicated action, separate from picking a mode above: define new colors,
+        # import a file, sub-select, and save/delete named palettes in your library.
+        self.btn_manage_palettes = QPushButton("🎨 Define / manage palettes…")
+        self.btn_manage_palettes.clicked.connect(self.open_palette_manager)
+        form_layout.addRow(self.btn_manage_palettes)
 
         # For E1 the palette conditions the model; for VQ-GAN it snaps the output.
         # This hint updates with the engine (see _on_engine_changed).
@@ -803,11 +835,31 @@ class StageBStudioTab(QWidget):
         items = ["None (raw output)", "Source image (k-means)", "Restored output (k-means)"]
         for p in palette_library.list_palettes():
             items.append(f"palette:{p.name}")
-        items += ["Custom file...", "Define palette..."]
+        items.append("Custom file...")
+        # Keep the transient "just defined, not yet saved" entry alive across a
+        # refresh (e.g. triggered by saving a *different* palette in the manager).
+        if self.custom_palette is not None:
+            items.append("Custom (unsaved)")
         combo.addItems(items)
         idx = combo.findText(prev)
         combo.setCurrentIndex(idx if idx >= 0 else combo.findText("Source image (k-means)"))
         combo.blockSignals(False)
+
+    def open_palette_manager(self) -> None:
+        """Define, import, or edit a palette — separate from picking a mode above."""
+        dlg = PaletteManagerDialog(self)
+        accepted = dlg.exec() == QDialog.Accepted
+        if dlg.library_changed:
+            self._refresh_palette_combo()
+        if not accepted:
+            return
+        pal = dlg.get_enabled_palette_float32()
+        if pal is None or len(pal) == 0:
+            return
+        self.custom_palette = pal
+        if self.combo_palette_mode.findText("Custom (unsaved)") < 0:
+            self.combo_palette_mode.addItem("Custom (unsaved)")
+        self.combo_palette_mode.setCurrentText("Custom (unsaved)")
 
     def on_palette_mode_changed(self, text: str):
         if text == "Custom file...":
@@ -819,20 +871,6 @@ class StageBStudioTab(QWidget):
                 self.custom_palette_file = file_path
             else:
                 self.combo_palette_mode.setCurrentText("Source image (k-means)")
-        elif text == "Define palette...":
-            dlg = PaletteManagerDialog(self)
-            accepted = dlg.exec() == QDialog.Accepted
-            if dlg.library_changed:
-                self._refresh_palette_combo()
-            if accepted:
-                pal = dlg.get_enabled_palette_float32()
-                if pal is not None and len(pal) > 0:
-                    self.custom_palette = pal
-                    return
-            # Cancelled or empty
-            self.combo_palette_mode.blockSignals(True)
-            self.combo_palette_mode.setCurrentText("Source image (k-means)")
-            self.combo_palette_mode.blockSignals(False)
 
     def _explicit_palette_or_none(self) -> np.ndarray | None:
         """The fixed palette array for the current selection, or None for the
@@ -842,7 +880,7 @@ class StageBStudioTab(QWidget):
             return palette_library.load_named(mode[len("palette:"):]).colors
         if mode == "Custom file...":
             return palette_library.import_palette(self.custom_palette_file) if self.custom_palette_file else None
-        if mode == "Define palette...":
+        if mode == "Custom (unsaved)":
             return self.custom_palette
         return None
 
