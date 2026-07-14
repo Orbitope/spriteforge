@@ -27,7 +27,8 @@ def convert_image_to_sprite(
     dither_strength: float = 0.05,
     despeckle: bool = True,
     despeckle_min_area: int = 2,
-) -> np.ndarray:
+    return_palette: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Convert an arbitrary float32 RGBA/RGB image [0, 1] into a crisp retro pixel-art sprite.
 
     Args:
@@ -46,9 +47,13 @@ def convert_image_to_sprite(
         dither_strength: Intensity of dithering noise in OKLab space.
         despeckle: Whether to remove isolated transparent/opaque noise speckles.
         despeckle_min_area: Minimum pixel area for speckles to survive.
+        return_palette: If True, return (sprite, palette) instead of just sprite —
+            lets a caller discover the concrete colors an auto-extracting mode
+            (kmeans/median/preset/fixed) picked, e.g. to populate a sub-select UI.
 
     Returns:
-        (target_size, target_size, 4) float32 RGBA array in [0, 1].
+        (target_size, target_size, 4) float32 RGBA array in [0, 1], or
+        (sprite, palette) if return_palette is True.
     """
     # 1. Resize down to exact target size using area averaging
     resized = resize_to_target(img, target_size=target_size, method="area")
@@ -88,4 +93,4 @@ def convert_image_to_sprite(
     if despeckle and despeckle_min_area > 1:
         snapped = despeckle_alpha(snapped, min_area=despeckle_min_area)
 
-    return snapped
+    return (snapped, palette) if return_palette else snapped

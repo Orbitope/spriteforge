@@ -179,6 +179,8 @@ QLabel#previewLabel {
 def numpy_to_qpixmap(arr_rgba: np.ndarray, scale_size: int = 320) -> QPixmap:
     """Convert float32 RGBA numpy array [0, 1] to a crisp nearest-neighbor QPixmap preview."""
     u8 = np.clip(arr_rgba * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    u8 = np.ascontiguousarray(u8)  # QImage needs a C-contiguous buffer; a torch .permute()'d
+    # array (e.g. the VQ-GAN's raw, unsnapped output) is not, and QImage() raises otherwise.
     h, w, c = u8.shape
     qimg = QImage(u8.data, w, h, w * c, QImage.Format_RGBA8888)
     pix = QPixmap.fromImage(qimg)
@@ -201,6 +203,45 @@ def _parse_color_input(text: str) -> tuple[int, int, int] | None:
     if m:
         return int(m.group(1)), int(m.group(2)), int(m.group(3))
     return None
+
+
+def _make_swatch_icon(r: int, g: int, b: int) -> QIcon:
+    pm = QPixmap(24, 24)
+    pm.fill(QColor(r, g, b))
+    return QIcon(pm)
+
+
+def _populate_swatch_checklist(list_widget: QListWidget, colors: np.ndarray, checked: np.ndarray | None = None) -> None:
+    """Fill `list_widget` with checkable colored swatches for `colors` (K, 3) float32
+    in [0, 1]. `checked` is an optional (K,) bool array (defaults to all-checked).
+    Signals are blocked during the rebuild so this doesn't fire itemChanged and
+    trigger a live reconversion for every item added."""
+    list_widget.blockSignals(True)
+    list_widget.clear()
+    for i, rgb in enumerate(colors):
+        u8 = np.clip(np.asarray(rgb) * 255.0 + 0.5, 0, 255).astype(int)
+        r, g, b = int(u8[0]), int(u8[1]), int(u8[2])
+        item = QListWidgetItem(_make_swatch_icon(r, g, b), f"  #{r:02x}{g:02x}{b:02x}")
+        item.setData(Qt.UserRole, (r, g, b))
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        is_checked = True if checked is None else bool(checked[i])
+        item.setCheckState(Qt.Checked if is_checked else Qt.Unchecked)
+        list_widget.addItem(item)
+    list_widget.blockSignals(False)
+
+
+def _checklist_colors(list_widget: QListWidget, checked_only: bool) -> np.ndarray | None:
+    """Colors currently in `list_widget` (all, or just the checked ones). None if
+    the list is empty or (when checked_only) nothing is checked."""
+    colors = []
+    for i in range(list_widget.count()):
+        item = list_widget.item(i)
+        if checked_only and item.checkState() != Qt.Checked:
+            continue
+        colors.append(item.data(Qt.UserRole))
+    if not colors:
+        return None
+    return np.array(colors, dtype=np.float32) / 255.0
 
 
 class PaletteManagerDialog(QDialog):
@@ -455,7 +496,8 @@ class StageAStudioTab(QWidget):
         super().__init__()
         self.current_img: np.ndarray | None = None
         self.generated_sprite: np.ndarray | None = None
-        self.custom_palette: np.ndarray | None = None  # float32 (N,3) from editor
+        self.custom_palette: np.ndarray | None = None  # float32 (N,3) backing "Custom (unsaved)"
+        self.active_palette_full: np.ndarray | None = None  # full candidate set behind the checklist
         self.init_ui()
 
     def init_ui(self):
@@ -485,6 +527,19 @@ class StageAStudioTab(QWidget):
         self.btn_manage_palettes.clicked.connect(self.open_palette_manager)
         form_layout.addRow(self.btn_manage_palettes)
 
+        # Embedded, always-visible sub-select: uncheck a color and the sprite
+        # reconverts immediately, no dialog to open or save required.
+        subselect_container = QWidget()
+        subselect_layout = QVBoxLayout(subselect_container)
+        subselect_layout.setContentsMargins(0, 0, 0, 0)
+        subselect_layout.addWidget(QLabel("Uncheck to exclude a color (updates live):"))
+        self.list_subselect = QListWidget()
+        self.list_subselect.setIconSize(QSize(20, 20))
+        self.list_subselect.setMaximumHeight(140)
+        self.list_subselect.itemChanged.connect(self._on_subselect_changed)
+        subselect_layout.addWidget(self.list_subselect)
+        form_layout.addRow(subselect_container)
+
         self.spin_colors = QSpinBox()
         self.spin_colors.setRange(2, 64)
         self.spin_colors.setValue(16)
@@ -513,7 +568,10 @@ class StageAStudioTab(QWidget):
 
         self.btn_convert = QPushButton("⚡ Generate Retro Sprite")
         self.btn_convert.setObjectName("primaryButton")
-        self.btn_convert.clicked.connect(self.convert_sprite)
+        # Lambda, not a direct connect: convert_sprite gained a resync_palette
+        # kwarg, and QPushButton.clicked emits a bool that would otherwise land
+        # in that slot position. A full click should always resync (re-extract).
+        self.btn_convert.clicked.connect(lambda: self.convert_sprite())
         form_layout.addRow(self.btn_convert)
 
         self.btn_export = QPushButton("💾 Export Sprite PNG...")
@@ -580,25 +638,46 @@ class StageAStudioTab(QWidget):
         combo.blockSignals(False)
 
     def open_palette_manager(self) -> None:
-        """Define, import, or edit a palette — separate from picking a mode above."""
+        """Define, import, or edit a palette — separate from picking a mode above.
+        The full set (and whatever was checked in the manager) becomes the
+        starting point for the embedded, always-visible sub-select checklist."""
         dlg = PaletteManagerDialog(self)
         accepted = dlg.exec() == QDialog.Accepted
         if dlg.library_changed:
             self._refresh_palette_combo()
         if not accepted:
             return
-        pal = dlg.get_enabled_palette_float32()
-        if pal is None or len(pal) == 0:
+        full = dlg.get_full_palette_float32()
+        if full is None:
             return
-        self.custom_palette = pal
+        checked_mask = np.array(
+            [dlg.list_widget.item(i).checkState() == Qt.Checked for i in range(dlg.list_widget.count())],
+            dtype=bool,
+        )
+        self.custom_palette = full
         if self.combo_palette_mode.findText("Custom (unsaved)") < 0:
             self.combo_palette_mode.addItem("Custom (unsaved)")
-        self.combo_palette_mode.setCurrentText("Custom (unsaved)")  # triggers convert_sprite via signal
+        self.combo_palette_mode.blockSignals(True)
+        self.combo_palette_mode.setCurrentText("Custom (unsaved)")
+        self.combo_palette_mode.blockSignals(False)
+        self.active_palette_full = full
+        _populate_swatch_checklist(self.list_subselect, full, checked=checked_mask)
+        self.convert_sprite(resync_palette=False)  # checklist is already set up above
 
     def on_palette_mode_changed(self, text: str) -> None:
         self.convert_sprite()
 
-    def convert_sprite(self):
+    def _on_subselect_changed(self, item: QListWidgetItem) -> None:
+        """A checkbox in the embedded sub-select list was toggled. Reconvert live
+        using only the checked colors — no dialog, no save, no re-extraction."""
+        self.convert_sprite(resync_palette=False)
+
+    def convert_sprite(self, resync_palette: bool = True):
+        """resync_palette=True (the default — full "Generate" click, image load, or
+        mode change) re-derives the full candidate palette for the current mode and
+        resets the checklist to all-checked. resync_palette=False (a sub-select
+        checkbox toggle) reuses the already-populated checklist and just narrows to
+        the checked subset — this is what makes unchecking a color instant."""
         if self.current_img is None:
             return
         src = remove_background_flood(self.current_img) if self.chk_remove_bg.isChecked() else self.current_img
@@ -609,26 +688,32 @@ class StageAStudioTab(QWidget):
         dither_str = self.spin_dither_str.value()
         despeckle_val = self.chk_despeckle.isChecked()
         despeckle_min = self.spin_despeckle_area.value()
-
-        # Resolve the palette. Named library palettes and the just-defined "Custom
-        # (unsaved)" entry both produce an explicit array passed via `palette=`;
-        # per-image modes let the pipeline extract. One unified conversion call.
-        palette_arr = None
-        mode_val = "kmeans"
-        if combo_val == "per-image-median":
-            mode_val = "median-cut"
-        elif combo_val.startswith("palette:"):
-            try:
-                palette_arr = palette_library.load_named(combo_val[len("palette:"):]).colors
-            except ValueError as e:
-                QMessageBox.critical(self, "Palette Error", str(e))
-                return
-        elif combo_val == "Custom (unsaved)":
-            if self.custom_palette is None:
-                return
-            palette_arr = self.custom_palette
+        mode_val = "median-cut" if combo_val == "per-image-median" else "kmeans"
 
         try:
+            if resync_palette:
+                if combo_val.startswith("palette:"):
+                    full_pal = palette_library.load_named(combo_val[len("palette:"):]).colors
+                elif combo_val == "Custom (unsaved)":
+                    if self.custom_palette is None:
+                        return
+                    full_pal = self.custom_palette
+                else:
+                    # per-image-kmeans / per-image-median: extract now so the
+                    # checklist can show and sub-select the colors it found.
+                    _, full_pal = convert_image_to_sprite(
+                        src, target_size=size_val, palette_mode=mode_val, colors=colors_val,
+                        dither=dither_val, dither_strength=dither_str,
+                        despeckle=despeckle_val, despeckle_min_area=despeckle_min,
+                        return_palette=True,
+                    )
+                self.active_palette_full = full_pal
+                _populate_swatch_checklist(self.list_subselect, full_pal)
+
+            palette_arr = _checklist_colors(self.list_subselect, checked_only=True)
+            if palette_arr is None:
+                palette_arr = self.active_palette_full  # nothing checked -> fall back to full
+
             self.generated_sprite = convert_image_to_sprite(
                 src,
                 target_size=size_val,
@@ -666,7 +751,8 @@ class StageBStudioTab(QWidget):
         self.restored_sprite: np.ndarray | None = None
         self.restored_sprite_raw: np.ndarray | None = None
         self.custom_palette_file: str | None = None
-        self.custom_palette: np.ndarray | None = None
+        self.custom_palette: np.ndarray | None = None  # float32 (N,3) backing "Custom (unsaved)"
+        self.active_palette_full: np.ndarray | None = None  # full candidate set behind the checklist
         self.init_ui()
 
     def init_ui(self):
@@ -698,7 +784,10 @@ class StageBStudioTab(QWidget):
 
         self.btn_restore = QPushButton("✨ Run Neural Restoration")
         self.btn_restore.setObjectName("primaryButton")
-        self.btn_restore.clicked.connect(self.run_restoration)
+        # Lambda, not a direct connect: run_restoration gained a resync_palette
+        # kwarg, and QPushButton.clicked emits a bool that would otherwise land
+        # in that slot position. A full click should always resync (re-extract).
+        self.btn_restore.clicked.connect(lambda: self.run_restoration())
         form_layout.addRow(self.btn_restore)
 
         # ── Palette: snaps VQ-GAN output, conditions E1 ───────────────────────
@@ -713,6 +802,19 @@ class StageBStudioTab(QWidget):
         self.btn_manage_palettes = QPushButton("🎨 Define / manage palettes…")
         self.btn_manage_palettes.clicked.connect(self.open_palette_manager)
         form_layout.addRow(self.btn_manage_palettes)
+
+        # Embedded, always-visible sub-select: uncheck a color and the restoration
+        # reruns immediately, no dialog to open or save required.
+        subselect_container = QWidget()
+        subselect_layout = QVBoxLayout(subselect_container)
+        subselect_layout.setContentsMargins(0, 0, 0, 0)
+        subselect_layout.addWidget(QLabel("Uncheck to exclude a color (updates live):"))
+        self.list_subselect = QListWidget()
+        self.list_subselect.setIconSize(QSize(20, 20))
+        self.list_subselect.setMaximumHeight(140)
+        self.list_subselect.itemChanged.connect(self._on_subselect_changed)
+        subselect_layout.addWidget(self.list_subselect)
+        form_layout.addRow(subselect_container)
 
         # For E1 the palette conditions the model; for VQ-GAN it snaps the output.
         # This hint updates with the engine (see _on_engine_changed).
@@ -846,20 +948,32 @@ class StageBStudioTab(QWidget):
         combo.blockSignals(False)
 
     def open_palette_manager(self) -> None:
-        """Define, import, or edit a palette — separate from picking a mode above."""
+        """Define, import, or edit a palette — separate from picking a mode above.
+        The full set (and whatever was checked in the manager) becomes the
+        starting point for the embedded, always-visible sub-select checklist."""
         dlg = PaletteManagerDialog(self)
         accepted = dlg.exec() == QDialog.Accepted
         if dlg.library_changed:
             self._refresh_palette_combo()
         if not accepted:
             return
-        pal = dlg.get_enabled_palette_float32()
-        if pal is None or len(pal) == 0:
+        full = dlg.get_full_palette_float32()
+        if full is None:
             return
-        self.custom_palette = pal
+        checked_mask = np.array(
+            [dlg.list_widget.item(i).checkState() == Qt.Checked for i in range(dlg.list_widget.count())],
+            dtype=bool,
+        )
+        self.custom_palette = full
         if self.combo_palette_mode.findText("Custom (unsaved)") < 0:
             self.combo_palette_mode.addItem("Custom (unsaved)")
+        self.combo_palette_mode.blockSignals(True)
         self.combo_palette_mode.setCurrentText("Custom (unsaved)")
+        self.combo_palette_mode.blockSignals(False)
+        self.active_palette_full = full
+        _populate_swatch_checklist(self.list_subselect, full, checked=checked_mask)
+        if self.current_img is not None and (self.model is not None or self.e1_model is not None):
+            self.run_restoration(resync_palette=False)  # checklist is already set up above
 
     def on_palette_mode_changed(self, text: str):
         if text == "Custom file...":
@@ -871,6 +985,11 @@ class StageBStudioTab(QWidget):
                 self.custom_palette_file = file_path
             else:
                 self.combo_palette_mode.setCurrentText("Source image (k-means)")
+
+    def _on_subselect_changed(self, item: QListWidgetItem) -> None:
+        """A checkbox in the embedded sub-select list was toggled. Rerun the
+        restoration live using only the checked colors — no dialog, no save."""
+        self.run_restoration(resync_palette=False)
 
     def _explicit_palette_or_none(self) -> np.ndarray | None:
         """The fixed palette array for the current selection, or None for the
@@ -884,41 +1003,42 @@ class StageBStudioTab(QWidget):
             return self.custom_palette
         return None
 
-    def _apply_palette_snap(self, raw_output: np.ndarray, source_resized: np.ndarray) -> np.ndarray:
-        """Snap the VQ-GAN's raw continuous output to a palette. Defaults to a palette
-        extracted from the ORIGINAL (pre-restoration) source image rather than the
-        model's own output — see the palette combo comment above for why."""
+    def _resolve_full_palette(
+        self, source_resized: np.ndarray, raw_output: np.ndarray | None, num_colors: int
+    ) -> np.ndarray | None:
+        """Full candidate colors for the current Palette selection — used to (re)populate
+        the sub-select checklist on a resync. Only VQ-GAN's "None (raw output)" has
+        nothing to sub-select (the output isn't restricted to any palette); E1 always
+        needs a concrete palette (its own default is k-means from the source), so we
+        compute that default here too, rather than leaving it opaque inside the model."""
         mode = self.combo_palette_mode.currentText()
-        colors = self.spin_colors.value()
-
         if mode == "None (raw output)":
-            return raw_output
+            return None if self.combo_engine.currentText() == "VQ-GAN" else extract_palette_kmeans(source_resized, k=num_colors)
         if mode == "Source image (k-means)":
-            palette = extract_palette_kmeans(source_resized, k=colors)
-        elif mode == "Restored output (k-means)":
-            palette = extract_palette_kmeans(raw_output, k=colors)
-        else:
-            palette = self._explicit_palette_or_none()
-            if palette is None:
-                return raw_output
+            return extract_palette_kmeans(source_resized, k=num_colors)
+        if mode == "Restored output (k-means)":
+            basis = raw_output if raw_output is not None else source_resized
+            return extract_palette_kmeans(basis, k=num_colors)
+        return self._explicit_palette_or_none()
 
-        return nearest_neighbor_snap(raw_output, palette)
-
-    def run_restoration(self):
+    def run_restoration(self, resync_palette: bool = True):
+        """resync_palette=True (the default — full "Run" click, engine/checkpoint
+        change) re-derives the full candidate palette and resets the checklist to
+        all-checked. resync_palette=False (a sub-select checkbox toggle) reuses the
+        already-populated checklist and just narrows to the checked subset."""
         if self.current_img is None:
             QMessageBox.warning(self, "Warning", "Please load an input image first!")
             return
         engine = self.combo_engine.currentText()
         try:
-            from spriteforge.core.resize import resize_to_target
             if engine == "Palette UNet (E1)":
-                self._run_e1_restoration()
+                self._run_e1_restoration(resync_palette=resync_palette)
             else:
-                self._run_vqgan_restoration()
+                self._run_vqgan_restoration(resync_palette=resync_palette)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Restoration failed:\n{e}")
 
-    def _run_vqgan_restoration(self) -> None:
+    def _run_vqgan_restoration(self, resync_palette: bool = True) -> None:
         if self.model is None:
             QMessageBox.warning(self, "Warning", "Please load a VQ-GAN checkpoint first!")
             return
@@ -931,12 +1051,29 @@ class StageBStudioTab(QWidget):
             out_tensor, _, _ = self.model(tensor_in)
         raw_output = out_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
         self.restored_sprite_raw = raw_output
-        self.restored_sprite = self._apply_palette_snap(raw_output, resized_in)
+
+        colors = self.spin_colors.value()
+        if resync_palette:
+            full_pal = self._resolve_full_palette(resized_in, raw_output, colors)
+            self.active_palette_full = full_pal
+            if full_pal is not None:
+                _populate_swatch_checklist(self.list_subselect, full_pal)
+            else:
+                self.list_subselect.clear()
+
+        if self.active_palette_full is None:
+            self.restored_sprite = raw_output  # "None (raw output)" on VQ-GAN: no snap
+        else:
+            palette_arr = _checklist_colors(self.list_subselect, checked_only=True)
+            if palette_arr is None:
+                palette_arr = self.active_palette_full
+            self.restored_sprite = nearest_neighbor_snap(raw_output, palette_arr)
+
         pix = numpy_to_qpixmap(self.restored_sprite, 320)
         self.lbl_out_preview.setPixmap(pix)
         self.lbl_out_preview.setText("")
 
-    def _run_e1_restoration(self) -> None:
+    def _run_e1_restoration(self, resync_palette: bool = True) -> None:
         if self.e1_model is None:
             QMessageBox.warning(self, "Warning", "Please load a Palette UNet (E1) checkpoint first!")
             return
@@ -947,11 +1084,19 @@ class StageBStudioTab(QWidget):
         img_rgba = resized_in.copy()
         img_rgba[..., :3] *= img_rgba[..., 3:4]  # premultiply alpha, matching training
         num_colors = self.e1_model.config.num_colors
-        # A user-selected palette conditions the model; None falls back to the
-        # per-source k-means default. restore_sprite adapts any palette width to the
-        # model's trained K via _fit_palette_width, so a sub-selected subset works.
-        palette = self._explicit_palette_or_none()
-        out = restore_sprite(self.e1_model, num_colors, img_rgba, palette=palette)
+
+        if resync_palette:
+            full_pal = self._resolve_full_palette(img_rgba, None, num_colors)
+            self.active_palette_full = full_pal
+            _populate_swatch_checklist(self.list_subselect, full_pal)
+
+        # A user-selected (possibly sub-selected) palette conditions the model.
+        # restore_sprite adapts any palette width to the model's trained K via
+        # _fit_palette_width, so a checked subset works even if it's smaller than K.
+        palette_arr = _checklist_colors(self.list_subselect, checked_only=True)
+        if palette_arr is None:
+            palette_arr = self.active_palette_full
+        out = restore_sprite(self.e1_model, num_colors, img_rgba, palette=palette_arr)
         self.restored_sprite_raw = out
         self.restored_sprite = out
         pix = numpy_to_qpixmap(self.restored_sprite, 320)

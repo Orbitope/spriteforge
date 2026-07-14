@@ -78,3 +78,17 @@ def test_convert_image_to_sprite_empty_palette_raises():
     img = np.random.uniform(0, 1, (64, 64, 4)).astype(np.float32)
     with pytest.raises(ValueError):
         convert_image_to_sprite(img, target_size=32, palette=np.zeros((0, 3), dtype=np.float32))
+
+
+def test_convert_image_to_sprite_return_palette():
+    """return_palette=True exposes the concrete colors an auto-extracting mode
+    picked (used by the GUI to populate a live sub-select checklist)."""
+    img = np.random.uniform(0, 1, (64, 64, 4)).astype(np.float32)
+    out = convert_image_to_sprite(img, target_size=32, palette_mode="per-image-kmeans", colors=6)
+    assert isinstance(out, np.ndarray)  # default: unchanged return type
+
+    sprite, palette = convert_image_to_sprite(
+        img, target_size=32, palette_mode="per-image-kmeans", colors=6, return_palette=True
+    )
+    assert sprite.shape == (32, 32, 4)
+    assert palette.shape == (6, 3)
