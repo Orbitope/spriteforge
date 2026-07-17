@@ -29,27 +29,31 @@ import numpy as np
 from PIL import Image
 
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QImage, QPixmap, QIcon, QFont, QPalette, QColor
+from PySide6.QtGui import QImage, QPixmap, QIcon, QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTabWidget, QLabel, QPushButton, QComboBox, QSlider, QCheckBox,
+    QTabWidget, QLabel, QPushButton, QComboBox, QCheckBox,
     QFileDialog, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox,
-    QMessageBox, QSplitter, QScrollArea, QFrame, QDialog, QDialogButtonBox,
+    QMessageBox, QDialog, QDialogButtonBox,
     QLineEdit, QListWidget, QListWidgetItem, QColorDialog, QInputDialog,
 )
 
+from typing import TYPE_CHECKING
+
 from spriteforge.core.pipeline import convert_image_to_sprite
 from spriteforge.core.io import load_image_float32, save_image_float32
-from spriteforge.core.degrade import degrade, DegradeRanges
 from spriteforge.core.palette import (
     extract_palette_kmeans,
     nearest_neighbor_snap,
     remove_background_flood,
 )
 from spriteforge.core import palette_library
-from spriteforge.model.config import get_config
-from spriteforge.model.vqgan import SpriteVQGAN
-import torch
+
+# torch and the neural models are heavy; they are imported lazily inside the
+# Restore tab's methods so launching the app (Convert-only for most users) stays
+# fast and doesn't pull in torch at all.
+if TYPE_CHECKING:
+    from spriteforge.model.vqgan import SpriteVQGAN
 
 
 DARK_THEME_QSS = """
@@ -503,107 +507,139 @@ class StageAStudioTab(QWidget):
     def init_ui(self):
         layout = QHBoxLayout(self)
 
-        # Left Panel: Controls
-        control_group = QGroupBox("Convert Controls")
-        form_layout = QFormLayout(control_group)
+        # ── Left: controls, grouped into everyday basics + collapsible advanced ──
+        control_col = QVBoxLayout()
 
-        self.btn_load = QPushButton("📁 Load Input Image...")
+        basics = QGroupBox("Convert")
+        bform = QFormLayout(basics)
+
+        self.btn_load = QPushButton("Load image…")
         self.btn_load.clicked.connect(self.load_image)
-        form_layout.addRow(self.btn_load)
+        bform.addRow(self.btn_load)
 
         self.combo_size = QComboBox()
         self.combo_size.addItems(["16x16", "32x32", "48x48"])
         self.combo_size.setCurrentIndex(1)
-        form_layout.addRow("Target Size:", self.combo_size)
+        self.combo_size.currentTextChanged.connect(lambda _: self.convert_sprite())
+        bform.addRow("Size:", self.combo_size)
 
         self.combo_palette_mode = QComboBox()
         self._refresh_palette_combo()
         self.combo_palette_mode.currentTextChanged.connect(self.on_palette_mode_changed)
-        form_layout.addRow("Palette Mode:", self.combo_palette_mode)
+        bform.addRow("Palette:", self.combo_palette_mode)
 
-        # A dedicated action, separate from picking a mode above: define new colors,
-        # import a file, sub-select, and save/delete named palettes in your library.
-        self.btn_manage_palettes = QPushButton("🎨 Define / manage palettes…")
+        # Only meaningful for the per-image extraction modes; disabled for a named
+        # palette (its color count is fixed), so it never reads as a dead control.
+        self.spin_colors = QSpinBox()
+        self.spin_colors.setRange(2, 64)
+        self.spin_colors.setValue(16)
+        self.spin_colors.valueChanged.connect(lambda _: self.convert_sprite())
+        bform.addRow("Colors:", self.spin_colors)
+
+        self.btn_manage_palettes = QPushButton("Define / manage palettes…")
         self.btn_manage_palettes.clicked.connect(self.open_palette_manager)
-        form_layout.addRow(self.btn_manage_palettes)
+        bform.addRow(self.btn_manage_palettes)
 
         # Embedded, always-visible sub-select: uncheck a color and the sprite
         # reconverts immediately, no dialog to open or save required.
-        subselect_container = QWidget()
-        subselect_layout = QVBoxLayout(subselect_container)
-        subselect_layout.setContentsMargins(0, 0, 0, 0)
-        subselect_layout.addWidget(QLabel("Uncheck to exclude a color (updates live):"))
+        bform.addRow(QLabel("Colors in use — uncheck to exclude:"))
         self.list_subselect = QListWidget()
         self.list_subselect.setIconSize(QSize(20, 20))
         self.list_subselect.setMaximumHeight(140)
         self.list_subselect.itemChanged.connect(self._on_subselect_changed)
-        subselect_layout.addWidget(self.list_subselect)
-        form_layout.addRow(subselect_container)
+        bform.addRow(self.list_subselect)
 
-        self.spin_colors = QSpinBox()
-        self.spin_colors.setRange(2, 64)
-        self.spin_colors.setValue(16)
-        form_layout.addRow("Max Colors:", self.spin_colors)
+        control_col.addWidget(basics)
 
-        self.chk_dither = QCheckBox("Enable Bayer Ordered Dithering")
-        form_layout.addRow(self.chk_dither)
+        # Collapsible "Advanced" — rarely-touched knobs, hidden by default.
+        self.btn_advanced = QPushButton("▸ Advanced")
+        self.btn_advanced.setCheckable(True)
+        self.btn_advanced.setStyleSheet("text-align: left; padding: 4px;")
+        self.btn_advanced.toggled.connect(self._toggle_advanced)
+        control_col.addWidget(self.btn_advanced)
 
+        self.advanced_box = QGroupBox()
+        aform = QFormLayout(self.advanced_box)
+        self.chk_dither = QCheckBox("Dithering")
+        self.chk_dither.toggled.connect(self._on_advanced_changed)
+        aform.addRow(self.chk_dither)
         self.spin_dither_str = QDoubleSpinBox()
         self.spin_dither_str.setRange(0.0, 0.5)
         self.spin_dither_str.setValue(0.05)
         self.spin_dither_str.setSingleStep(0.01)
-        form_layout.addRow("Dither Strength:", self.spin_dither_str)
-
-        self.chk_despeckle = QCheckBox("Enable Despeckling")
+        self.spin_dither_str.setEnabled(False)
+        self.spin_dither_str.valueChanged.connect(lambda _: self.convert_sprite())
+        aform.addRow("    Strength:", self.spin_dither_str)
+        self.chk_despeckle = QCheckBox("Despeckle stray pixels")
         self.chk_despeckle.setChecked(True)
-        form_layout.addRow(self.chk_despeckle)
-
+        self.chk_despeckle.toggled.connect(self._on_advanced_changed)
+        aform.addRow(self.chk_despeckle)
         self.spin_despeckle_area = QSpinBox()
         self.spin_despeckle_area.setRange(1, 10)
         self.spin_despeckle_area.setValue(2)
-        form_layout.addRow("Min Speckle Area:", self.spin_despeckle_area)
+        self.spin_despeckle_area.valueChanged.connect(lambda _: self.convert_sprite())
+        aform.addRow("    Min area:", self.spin_despeckle_area)
+        self.chk_remove_bg = QCheckBox("Remove background first")
+        self.chk_remove_bg.toggled.connect(lambda _: self.convert_sprite())
+        aform.addRow(self.chk_remove_bg)
+        self.advanced_box.setVisible(False)
+        control_col.addWidget(self.advanced_box)
 
-        self.chk_remove_bg = QCheckBox("Remove background before converting")
-        form_layout.addRow(self.chk_remove_bg)
+        control_col.addStretch()
 
-        self.btn_convert = QPushButton("⚡ Generate Retro Sprite")
-        self.btn_convert.setObjectName("primaryButton")
-        # Lambda, not a direct connect: convert_sprite gained a resync_palette
-        # kwarg, and QPushButton.clicked emits a bool that would otherwise land
-        # in that slot position. A full click should always resync (re-extract).
-        self.btn_convert.clicked.connect(lambda: self.convert_sprite())
-        form_layout.addRow(self.btn_convert)
-
-        self.btn_export = QPushButton("💾 Export Sprite PNG...")
+        self.btn_export = QPushButton("Export PNG…")
         self.btn_export.setObjectName("accentButton")
         self.btn_export.clicked.connect(self.export_sprite)
-        form_layout.addRow(self.btn_export)
+        control_col.addWidget(self.btn_export)
 
-        layout.addWidget(control_group, 1)
+        control_wrap = QWidget()
+        control_wrap.setLayout(control_col)
+        layout.addWidget(control_wrap, 1)
 
-        # Right Panel: Live Previews
-        preview_group = QGroupBox("Pixel Art Studio Preview")
+        self._sync_colors_enabled()
+
+        # ── Right: input vs result previews ─────────────────────────────────────
+        preview_group = QGroupBox("Preview")
         preview_layout = QHBoxLayout(preview_group)
+        preview_layout.setAlignment(Qt.AlignTop)
 
         vbox_in = QVBoxLayout()
-        vbox_in.addWidget(QLabel("Original High-Res Input:"))
-        self.lbl_in_preview = QLabel("No Image Loaded")
+        vbox_in.addWidget(QLabel("Input"))
+        self.lbl_in_preview = QLabel("No image loaded")
         self.lbl_in_preview.setObjectName("previewLabel")
         self.lbl_in_preview.setAlignment(Qt.AlignCenter)
         self.lbl_in_preview.setMinimumSize(320, 320)
         vbox_in.addWidget(self.lbl_in_preview)
+        vbox_in.addStretch()
         preview_layout.addLayout(vbox_in)
 
         vbox_out = QVBoxLayout()
-        vbox_out.addWidget(QLabel("Generated Retro Sprite (Sharp 10x):"))
-        self.lbl_out_preview = QLabel("Click Generate")
+        vbox_out.addWidget(QLabel("Sprite (zoomed)"))
+        self.lbl_out_preview = QLabel("Load an image to start")
         self.lbl_out_preview.setObjectName("previewLabel")
         self.lbl_out_preview.setAlignment(Qt.AlignCenter)
         self.lbl_out_preview.setMinimumSize(320, 320)
         vbox_out.addWidget(self.lbl_out_preview)
+        vbox_out.addStretch()
         preview_layout.addLayout(vbox_out)
 
         layout.addWidget(preview_group, 2)
+
+    def _toggle_advanced(self, checked: bool) -> None:
+        self.btn_advanced.setText(("▾ " if checked else "▸ ") + "Advanced")
+        self.advanced_box.setVisible(checked)
+
+    def _on_advanced_changed(self) -> None:
+        """A dither/despeckle toggle changed: sync the dependent spinbox's enabled
+        state (so a disabled feature's knob isn't editable) and reconvert."""
+        self.spin_dither_str.setEnabled(self.chk_dither.isChecked())
+        self.spin_despeckle_area.setEnabled(self.chk_despeckle.isChecked())
+        self.convert_sprite()
+
+    def _sync_colors_enabled(self) -> None:
+        """Colors only affects the per-image extraction modes; grey it out otherwise."""
+        mode = self.combo_palette_mode.currentText()
+        self.spin_colors.setEnabled(mode in ("per-image-kmeans", "per-image-median"))
 
     def load_image(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Open Input Image", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)")
@@ -665,6 +701,7 @@ class StageAStudioTab(QWidget):
         self.convert_sprite(resync_palette=False)  # checklist is already set up above
 
     def on_palette_mode_changed(self, text: str) -> None:
+        self._sync_colors_enabled()
         self.convert_sprite()
 
     def _on_subselect_changed(self, item: QListWidgetItem) -> None:
@@ -891,6 +928,7 @@ class StageBStudioTab(QWidget):
         if not file_path:
             return
         try:
+            import torch  # lazy: only when a checkpoint is actually loaded
             ckpt = torch.load(file_path, map_location="cpu", weights_only=False)
             if "num_colors" in ckpt:
                 # E1 Palette UNet checkpoint
@@ -904,6 +942,8 @@ class StageBStudioTab(QWidget):
                 self.lbl_ckpt_status.setStyleSheet("color: #00CEC9;")
             else:
                 # VQ-GAN checkpoint
+                from spriteforge.model.config import get_config
+                from spriteforge.model.vqgan import SpriteVQGAN
                 config_name = ckpt.get("config_name", "32")
                 config = get_config(config_name)
                 self.model = SpriteVQGAN(config)
@@ -1042,6 +1082,7 @@ class StageBStudioTab(QWidget):
         if self.model is None:
             QMessageBox.warning(self, "Warning", "Please load a VQ-GAN checkpoint first!")
             return
+        import torch
         from spriteforge.core.resize import resize_to_target
         target_size = self.model.config.target_size
         src = remove_background_flood(self.current_img) if self.chk_remove_bg.isChecked() else self.current_img
@@ -1118,55 +1159,10 @@ class StageBStudioTab(QWidget):
             QMessageBox.information(self, "Success", f"Restored sprite saved to:\n{file_path}")
 
 
-class CalibrationTab(QWidget):
-    """Tab 3: Evaluate — calibration grid and dataset verification."""
-    def __init__(self):
-        super().__init__()
-        self.init_ui()
-
-    def init_ui(self):
-        layout = QVBoxLayout(self)
-
-        top_bar = QHBoxLayout()
-        self.btn_gen_grid = QPushButton("🔬 Generate Calibration Grid...")
-        self.btn_gen_grid.setObjectName("primaryButton")
-        self.btn_gen_grid.clicked.connect(self.generate_grid)
-        top_bar.addWidget(self.btn_gen_grid)
-        top_bar.addStretch()
-        layout.addLayout(top_bar)
-
-        self.lbl_grid_preview = QLabel("Click button above to select a clean sprite and generate a 14-primitive degradation grid.")
-        self.lbl_grid_preview.setObjectName("previewLabel")
-        self.lbl_grid_preview.setAlignment(Qt.AlignCenter)
-        self.lbl_grid_preview.setMinimumSize(600, 300)
-        layout.addWidget(self.lbl_grid_preview, 1)
-
-    def generate_grid(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Clean Sprite", "data_private", "PNG Images (*.png)")
-        if file_path:
-            try:
-                img = load_image_float32(file_path)
-                from spriteforge.core.resize import resize_to_target
-                real_downscaled = resize_to_target(img, target_size=32, method="area")
-                
-                rng = np.random.default_rng(seed=42)
-                ranges = DegradeRanges()
-                samples = [real_downscaled]
-                for _ in range(5):
-                    samples.append(degrade(real_downscaled, rng=rng, ranges=ranges))
-                
-                grid = np.concatenate(samples, axis=1)
-                pix = numpy_to_qpixmap(grid, scale_size=640)
-                self.lbl_grid_preview.setPixmap(pix)
-                self.lbl_grid_preview.setText("")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Grid generation failed:\n{e}")
-
-
 class SpriteforgeMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Spriteforge — Retro 2D Sprite Generator & AI Studio")
+        self.setWindowTitle("Spriteforge")
         self.resize(1000, 700)
         self.setStyleSheet(DARK_THEME_QSS)
 
@@ -1174,15 +1170,13 @@ class SpriteforgeMainWindow(QMainWindow):
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        # Header title
-        header = QLabel("👾 Spriteforge — Pixel Art Sprite Studio")
-        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #6C5CE7; margin-bottom: 10px;")
+        header = QLabel("Spriteforge")
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #6C5CE7; margin-bottom: 8px;")
         layout.addWidget(header)
 
         tabs = QTabWidget()
-        tabs.addTab(StageAStudioTab(), "🎨 Convert")
-        tabs.addTab(StageBStudioTab(), "🧠 Restore")
-        tabs.addTab(CalibrationTab(), "🔬 Evaluate")
+        tabs.addTab(StageAStudioTab(), "Convert")
+        tabs.addTab(StageBStudioTab(), "Restore")
         layout.addWidget(tabs)
 
         self.setCentralWidget(central_widget)
