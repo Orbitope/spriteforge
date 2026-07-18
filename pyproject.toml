@@ -5,12 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spriteforge"
 version = "0.1.0"
-description = "High-resolution image to constrained low-pixel 2D sprite generator using VQ-GAN and OKLab palette snapping"
+description = "High-resolution image to constrained low-pixel 2D sprite generator using OKLab palette snapping and optional neural restoration"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Proprietary / Deferred"}
+# Dual-licensed: AGPL-3.0-or-later for open-source use, or a separate commercial
+# license (contact matthew.wesley.burke@gmail.com). See LICENSE.
+license = {text = "AGPL-3.0-or-later OR LicenseRef-Commercial"}
 authors = [
-    {name = "Spriteforge Team"},
+    {name = "Matthew Burke", email = "matthew.wesley.burke@gmail.com"},
+]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
 ]
 dependencies = [
     "numpy>=1.24.0",
