@@ -82,6 +82,11 @@ def test_decode_to_rgba_is_discrete():
     opaque_rgb = rgb[alpha > 0]
     if opaque_rgb.shape[0] > 0:
         pal = palette[0]  # (8, 3)
-        dists = torch.cdist(opaque_rgb, pal)
+        # Use the direct (non-matmul) distance path: cdist's default mm-based
+        # formula (x^2 + y^2 - 2xy) suffers float32 cancellation and reports tiny
+        # nonzero distances (~1e-4) even for identical vectors, which made this
+        # assertion flaky. decode_to_rgba gathers palette colors verbatim, so the
+        # true min distance for an opaque pixel is exactly 0.
+        dists = torch.cdist(opaque_rgb, pal, compute_mode="donot_use_mm_for_euclid_dist")
         min_dists = dists.min(dim=-1).values
         assert torch.all(min_dists < 1e-5), "every opaque output pixel must exactly match a palette entry"
