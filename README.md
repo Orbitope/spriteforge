@@ -30,31 +30,30 @@ This installs the `spriteforge` command.
 spriteforge gui
 ```
 
-The window has three tabs: **🎨 Convert** (deterministic pixelation + palette reduction), **🧠 Restore** (neural cleanup of degraded inputs), and **🔬 Evaluate** (degradation calibration grids).
-
-Most people want the **Convert** tab.
+The window has two tabs: **Convert** (deterministic pixelation + palette reduction) and **Restore** (neural cleanup of degraded inputs). Most people only need **Convert**.
 
 ## Convert tab — image → sprite
 
-1. **Load Input Image** — pick any PNG/JPG/BMP/WebP.
-2. **Target Size** — 16×16, 32×32, or 48×48.
-3. **Palette Mode** — how colors are chosen (see below).
-4. **Generate Retro Sprite** — the sharp, nearest-neighbor preview appears on the right. A preview also regenerates automatically as you change settings.
-5. **Export Sprite PNG** — saves the sprite at exact target resolution (transparency preserved).
+1. **Load image…** — pick any PNG/JPG/BMP/WebP. The sprite preview appears on the right immediately.
+2. **Size** — 16×16, 32×32, or 48×48.
+3. **Palette** — how colors are chosen (see below).
+4. **Export PNG…** — saves the sprite at exact target resolution (transparency preserved).
 
-Other controls: **Max Colors** (palette size for the auto-extraction modes), **Bayer dithering**, **despeckling** (removes stray 1-pixel noise), and **Remove background before converting** (flood-matte the background to transparent first).
+There's no "generate" step — the preview updates **live** as you change any setting. **Colors** sets the palette size for the per-image extraction modes (it's greyed out when you pick a named palette, where it doesn't apply).
 
-### Palette Mode options
+Rarely-needed options live under a collapsible **Advanced** section: **Dithering** (+ strength), **Despeckle stray pixels** (+ minimum area), and **Remove background first** (flood-matte the background to transparent before converting).
+
+### Palette options
 
 - `per-image-kmeans` — extract a palette from this image with k-means (default, good general choice).
 - `per-image-median` — extract with median-cut.
 - `palette:<name>` — snap to a saved or built-in named palette (e.g. `palette:pico8`).
 
-To create or choose named palettes, use the **🎨 Define / manage palettes…** button (see [Palettes](#palettes)).
+To create or choose named palettes, use the **Define / manage palettes…** button (see [Palettes](#palettes)).
 
 ### Sub-selecting colors (live)
 
-Under the palette controls is an always-visible checklist: **"Uncheck to exclude a color (updates live)."** After a conversion it fills with the colors actually in use. **Uncheck any color and the sprite re-converts immediately** using only the checked colors — no dialog, no save step. This works for every palette mode.
+Under the palette controls is an always-visible checklist labeled **"Colors in use — uncheck to exclude."** After a conversion it fills with the colors actually in use. **Uncheck any color and the sprite re-converts immediately** using only the checked colors — no dialog, no save step. This works for every palette mode.
 
 ## Restore tab — clean up a degraded sprite
 
@@ -72,7 +71,7 @@ The **Palette** control drives both engines: for VQ-GAN it snaps the model's con
 
 ## Palettes
 
-Click **🎨 Define / manage palettes…** (on either tab) to open the Palette Manager.
+Click **Define / manage palettes…** (on either tab) to open the Palette Manager.
 
 - **Build a palette:** type hex values (`#rrggbb`, `#rgb`, or `rgba(...)`), or use **🎨 Pick…** for a color wheel.
 - **📚 Load from library:** start from a built-in preset or one you saved.
