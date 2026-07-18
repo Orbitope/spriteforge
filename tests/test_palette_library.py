@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """Tests for the palette library (user-dir vs bundled, save/load/import/delete).
 
 The user palette dir is monkeypatched to a tmp path so tests never touch the

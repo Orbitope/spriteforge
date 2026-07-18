@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Stage 2, item 1d: run the real (user-supplied, uncurated) AI-generated character
 crops through the actual model pipeline — this is the whole point of assembling

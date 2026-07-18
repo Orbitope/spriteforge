@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """Smoke tests for `spriteforge convert` — the --palette-mode choices and cmd_convert's
 handling of them previously did not match at all (choices included "k-means"/"gameboy"/"nes"
 while the function only checked for "fixed"/"per-image-kmeans"/"per-image-median", and

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 One-off script: crop individual figures out of real AI-generated character
 sheets (for the Stage 2 "real-input eval set", item 1d — see

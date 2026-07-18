@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 D1 diagnostic (see plan: methodology review, Part 4 Stage 1): clean round-trip test.
 

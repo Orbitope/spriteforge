@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """Tests for E1 inference (restore_sprite): discreteness, sub-select containment,
 and palette-width adaptation. The underlying UNet is tested in test_palette_unet;
 here we cover the inference wrapper that the GUI/CLI reach.
