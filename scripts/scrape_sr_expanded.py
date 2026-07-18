@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Scrape Spriters Resource with the expanded game slug list and merge into
 the existing train_32_sr_combined dataset.

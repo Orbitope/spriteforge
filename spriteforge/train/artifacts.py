@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Devlog artifact helpers (Phase 5): periodic training sample grids and before/after slider
 assets for the Orbitope content pipeline. Pure helpers — no global state.

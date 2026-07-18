@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """CLI entry point for E1 palette-index classification training. See
 spriteforge/train/train_palette.py for the design notes and open questions
 (palette-conditioning source at inference time is not yet resolved)."""

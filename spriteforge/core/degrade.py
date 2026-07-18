@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Degradation core — turns a clean sprite into a plausible "downscaled real image"
 approximation, so a reconstruction model learns to invert exactly these artifacts.

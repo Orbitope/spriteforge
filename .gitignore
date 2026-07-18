@@ -1,7 +1,8 @@
-# Data and datasets (privacy, copyright)
-data_private/
-data/
-datasets/
+# Data and datasets (privacy, copyright) — anchored to repo root so they do NOT
+# also match the packaged spriteforge/data/ dir (bundled palettes + data modules).
+/data_private/
+/data/
+/datasets/
 
 # Checkpoints and trained models (copyright, large files)
 checkpoints*/

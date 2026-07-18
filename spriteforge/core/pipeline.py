@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Stage A Pipeline: Deterministic conversion of high-res or arbitrary images to retro pixel-art sprites.
 """

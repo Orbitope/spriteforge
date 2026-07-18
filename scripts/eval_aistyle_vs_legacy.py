@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Commercial
+# Copyright (C) 2026 Matthew Burke <matthew.wesley.burke@gmail.com>
+
 """
 Head-to-head on the real eval set: legacy-degradation sr checkpoint vs the new
 ai_style-degradation sr checkpoint. Full deterministic-first pipeline per image:
